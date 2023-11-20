@@ -1,27 +1,22 @@
 #include <stdio.h>
 #include <string.h>
 #include "decyph.h"
-//morph:
-//entry {
-//    int morphs_count;
-//    char *morphs[MAXMORPHS];
-//}
-//
-//[x] on init: init morphs (but do not alloc space)
-//[x] on load: load morphs (alloc on load)
-//[x] on save: save morphs
-//[x] on addmorph: alloc space and add morph (before that, check if exists)
-//[x] on unmorph: unmorph all and free space
-//[x] on search: also search for morphs
-//[x] on copy: also copy morphs
-//[x] on printsingle: print its morphs
+// todo:
+// [x] fix string leakage
+// [x] fix empty pushes and removes
+// [x] batch push
+// [x] batch remove
+// [x] batch morph
+// [ ] notes are appended to words
+// [ ] make morphs hold different translations
+// [ ] encyph
 
 int main(int argc, char *argv[]){
-    fio_init(argv[0]);
+    if(argc)fio_init(argv[0]);
     char input[4096];
+    cbc_init();
 #ifdef CBCurses_Windows
     system("chcp 65001");
-    cbc_clearscreen();
 #endif
     global.pointerpool=malloc(MAXPOINTERS*sizeof(void *));
     for(i32 i=0; i<MAXPOINTERS; i++)global.pointerpool[i]=NULL;
@@ -31,9 +26,9 @@ int main(int argc, char *argv[]){
     memset(printr_token, 0, TOKEN_MAXLEN);
     char *input_orig=mallocpointer(4096*sizeof(char));
     FILE *dic_file=NULL;
-    FILE *notes_file=fopenrelative("notes.txt", "a");
     initEntries();
     loadDictionary(dic_file);
+    cbc_clearscreen();
     cbc_setcolor(Default|Bright);
     printf("    DECYPH\n");
     cbc_setcolor(Cyan|Bright);
@@ -41,10 +36,11 @@ int main(int argc, char *argv[]){
     cbc_setcolor(Default);
     while(1){
         cbc_setcolor(Yellow);
+        fflush(stdout);
         printf("> ");
         memset(input, 0, 4096);
         fgets(input, 4000, stdin);
-        if(input[strlen(input)-1]=='\n')input[strlen(input)-1]=0;
+        while(input[strlen(input)-1]=='\n')input[strlen(input)-1]=0;
         memset(input_orig, 0, 4096);
         strcpy(input_orig, input);
         strlower(input);
@@ -55,7 +51,8 @@ int main(int argc, char *argv[]){
         else if(fullmatch(input, "h") || fullmatch(input, "help")){
             pos=0;
             printr(Default, "Help\n"
-            "cls         - clear the screen\n"
+            "    Notes: Decyph splits words with space.\n"
+            "$ccls$o         - clear the screen\n"
             "$c[c]ount$o     - count current entries\n"
             "$c[h]elp$o      - show commands list\n"
             "$c[s]ave$o      - save current entries\n"
@@ -63,11 +60,11 @@ int main(int argc, char *argv[]){
             "$c[g]uess$o     - guess a $c<word>$o's $c<meaning>$o\n"
             "$c[l]ink$o      - link two existing $c<word>$os\n"
             "$c[unl]ink$o    - unlink two existing $c<word>$os\n"
-            "$c[p]ush$o      - push current $c<word>$o into dictionary entries\n"
-            "$c[n]ote$o      - take down $c<notes>$o, without decapitalization\n"
-            "$c[m]orph$o     - add to a $c<word>$o its $c<variant>$o\n"
+            "$c[p]ush$o      - push $c<words>$o into dictionary entries\n"
+//            "$c[n]ote$o      - write down about a $c<word>$o its $c<notes>$o\n"
+            "$c[m]orph$o     - add to a $c<word>$o its $c<variants>$o\n"
             "$c[unm]orph$o   - remove all variants from a $c<word>$o\n"
-            "$c[r]emove$o    - remove one $c<word>$o's entry\n"
+            "$c[r]emove$o    - remove $c<words>$o' entry\n"
             "$c[tr]anslate$o - translate a $c<sentence>$o\n"
             "$c<word>$o      - shows information about the $c<word>$o\n"
             "$c<line>$o      - attempt to translate the $c<line>$o\n");
@@ -109,51 +106,78 @@ int main(int argc, char *argv[]){
         else if(fullmatch(input, "s") || fullmatch(input, "save")){
             saveDictionary(dic_file);
             printf("Saved all %d entries.\n", entries_count);
-            fclose(notes_file);
-            notes_file=fopenrelative("notes.txt", "a");
         }
         else if(fullmatch(input, "r") || fullmatch(input, "remove")){
             char orig[MAXORIGLEN];
             memset(orig, 0, MAXORIGLEN);
-            sscanf(input, "%*s " SPEC_ORIG, orig);
-            entry *ent=findEntry(orig);
-            if(ent==NULL){
-                printf("Entry is not found.\n");
+            int offset=0, doffset=0;
+            sscanf(input, "%*s%n", &offset);
+            while(sscanf(input+offset, SPEC_ORIG "%n", orig, &doffset)==1){
+                offset+=doffset;
+                entry *ent=findEntry(orig);
+                if(ent==NULL){
+                    printf("Entry ");
+                    cbc_setcolor(Green|Bright);
+                    printf("%s", orig);
+                    cbc_setcolor(Default);
+                    printf(" not found.\n");
+                    continue;
+                }
+                if(strcmp(ent->orig, orig)){
+                    printf("Cannot delete an entry from a morph.\n");
+                    continue;
+                }
+                entries_count--;
+                entries[entries_count].code=ent->code;
+                destroyEntry(ent);
+                if(entries_count){
+                    copyEntry(ent, &entries[entries_count]);
+                    // here, change all the links.
+                    changeEntryLinks(ent->code, -1);
+                    changeEntryLinks(entries[entries_count].code, ent->code);
+                }
+                printf("Entry ");
+                cbc_setcolor(Green|Bright);
+                printf("%s", orig);
+                cbc_setcolor(Default);
+                printf(" deleted.\n");
+            }
+            if(!doffset){
+                printf("Please enter a valid word.\n");
                 continue;
             }
-            if(strcmp(ent->orig, orig)){
-                printf("Cannot delete an entry from a morph.\n");
-            }
-            entries_count--;
-            if(entries_count){
-                copyEntry(ent, &entries[entries_count]);
-                // here, change all the links.
-                changeEntryLinks(ent->code, -1);
-                changeEntryLinks(entries[entries_count].code, ent->code);
-            }
-            printf("Entry ");
-            cbc_setcolor(Green|Bright);
-            printf("%s", orig);
-            cbc_setcolor(Default);
-            printf(" deleted.\n");
         }
-        else if(fullmatch(input, "p") || fullmatch(input, "push")){ // notes
+        else if(fullmatch(input, "p") || fullmatch(input, "push")){
             entry tmpent=newEntry();
-            sscanf(input, "%*s " SPEC_ORIG, tmpent.orig);
-            if(findEntry(tmpent.orig)){
-                printf("Word already exists.\n");
+            int offset=0, doffset=0;
+            sscanf(input, "%*s%n", &offset);
+            while(sscanf(input+offset, SPEC_ORIG "%n", tmpent.orig, &doffset)==1){
+                offset+=doffset;
+                if(findEntry(tmpent.orig)){
+                    printf("Word already exists: ");
+                    cbc_setcolor(Green|Bright);
+                    printf("%s\n", tmpent.orig);
+                    cbc_setcolor(Default);
+                    destroyEntry(&tmpent);
+                    tmpent=newEntry();
+                    continue;
+                }
+                parseNewEntry(&tmpent);
+                pushEntry(tmpent);
+                printf("Word added: ");
+                cbc_setcolor(Green|Bright);
+                printf("%s", tmpent.orig);
+                cbc_setcolor(Default);
+                printf(".\n");
+                tmpent=newEntry();
+            }
+            if(!doffset){
+                printf("Please enter a valid word.\n");
                 continue;
             }
-            parseNewEntry(&tmpent);
-            pushEntry(tmpent);
-            printf("Word added: ");
-            cbc_setcolor(Green|Bright);
-            printf("%s", tmpent.orig);
-            cbc_setcolor(Default);
-            printf(".\n");
-            fprintf(notes_file, "  New word found: %s\n", tmpent.orig);
+            destroyEntry(&tmpent);
         }
-        else if(fullmatch(input, "g") || fullmatch(input, "guess")){ // notes
+        else if(fullmatch(input, "g") || fullmatch(input, "guess")){
             char orig[MAXORIGLEN];
             memset(orig, 0, MAXORIGLEN);
             sscanf(input, "%*s " SPEC_ORIG, orig);
@@ -165,14 +189,13 @@ int main(int argc, char *argv[]){
             if(ent->cert<1000){
                 sscanf(input, "%*s %*s " SPEC_TRAN, ent->tran);
                 printf("You make a guess: %s = %s\n", orig, ent->tran);
-                fprintf(notes_file, "  Guess: %s = %s?\n", orig, ent->tran);
                 ent->cert=0;
             }else{
                 printf("Word is already determined.\n");
                 continue;
             }
         }
-        else if(fullmatch(input, "d") || fullmatch(input, "determine")){ // notes
+        else if(fullmatch(input, "d") || fullmatch(input, "determine")){
             char orig[MAXORIGLEN];
             memset(orig, 0, MAXORIGLEN);
             sscanf(input, "%*s " SPEC_ORIG, orig);
@@ -187,7 +210,6 @@ int main(int argc, char *argv[]){
                 cbc_setcolor(Green|Bright);
                 printf("%s\n", ent->tran);
                 cbc_setcolor(Default);
-                fprintf(notes_file, "  Word determined: %s = %s\n", orig, ent->tran);
                 ent->cert=1000;
             }else{
                 printf("You redetermine the word: %s = %s -> ", orig, ent->tran);
@@ -195,7 +217,6 @@ int main(int argc, char *argv[]){
                 cbc_setcolor(Green|Bright);
                 printf("%s\n", ent->tran);
                 cbc_setcolor(Default);
-                fprintf(notes_file, "  Word redetermined: %s = %s\n", orig, ent->tran);
                 ent->cert=1000;
             }
         }
@@ -246,27 +267,38 @@ int main(int argc, char *argv[]){
             }
             if(ent->morphs_count<MAXMORPHS){
                 memset(orig, 0, MAXORIGLEN);
-                sscanf(input, "%*s %*s " SPEC_ORIG, orig);
-                if(findEntry(orig)){
-                    printf("Morph already exists.\n");
-                    continue;
+                int offset=0, doffset=0;
+                sscanf(input, "%*s %*s%n", &offset);
+                while(sscanf(input+offset, SPEC_ORIG "%n", orig, &doffset)==1){
+                    if(ent->morphs_count>=MAXMORPHS){
+                        printf("Word morphs has reached the limit.\n");
+                        break;
+                    }
+                    offset+=doffset;
+                    if(findEntry(orig)){
+                        printf("Morph ");
+                        cbc_setcolor(Green|Bright);
+                        printf("%s", orig);
+                        cbc_setcolor(Default);
+                        printf(" already exists.\n");
+                        continue;
+                    }
+                    ent->morphs[ent->morphs_count]=mallocpointer(MAXORIGLEN);
+                    memset(ent->morphs[ent->morphs_count], 0, MAXORIGLEN);
+                    strcpy(ent->morphs[ent->morphs_count], orig);
+                    printf("You create a morph of the word: %s = %s\n", ent->orig, ent->morphs[ent->morphs_count]);
+                    ent->morphs_count++;
                 }
-                ent->morphs[ent->morphs_count]=mallocpointer(MAXORIGLEN);
-                memset(ent->morphs[ent->morphs_count], 0, MAXORIGLEN);
-                strcpy(ent->morphs[ent->morphs_count], orig);
-                printf("You create a morph of the word: %s = %s\n", ent->orig, ent->morphs[ent->morphs_count]);
-                ent->morphs_count++;
+                if(!doffset){
+                    printf("Invalid morph.\n");
+                }
             }else{
                 printf("Word morphs has reached the limit.\n");
             }
         }
-        else if(fullmatch(input, "n") || fullmatch(input, "note")){
-            int init=0;
-            for(; !isspace(input[init]); init++);
-            for(; isspace(input[init]); init++);
-            fprintf(notes_file, "%s\n", input_orig+init);
-            printf("Notes taken.\n");
-        }
+//        else if(fullmatch(input, "n") || fullmatch(input, "note")){
+//
+//        }
         else if(fullmatch(input, "unm") || fullmatch(input, "unmorph")){
             char orig[MAXORIGLEN];
             memset(orig, 0, MAXORIGLEN);
@@ -285,12 +317,18 @@ int main(int argc, char *argv[]){
             }
         }
         else if(fullmatch(input, "tr") || fullmatch(input, "translate")){
-            const char s[2]=" ";
-            char *token=strtok(input, s);
-            token=strtok(NULL, s);
-            while(token!=NULL){
-                entry *ent=findEntry(token);
+            int offset=0, doffset=0, words=0, prevcert=0;
+            entry *ent=NULL;
+            char token[MAXORIGLEN];
+            memset(token, 0, MAXORIGLEN);
+            sscanf(input, "%*s%n", &offset);
+            for(; sscanf(input+offset, "%s%n", token, &doffset)==1; words++){
+                offset+=doffset;
+                ent=findEntry(token);
                 if(ent){
+                    if(words==0){
+                        prevcert=ent->cert;
+                    }
                     printTranslation(ent, 1);
                     size_t len=strlen(token);
                     while(isMark(token[len-1])){
@@ -304,33 +342,30 @@ int main(int argc, char *argv[]){
                     cbc_setcolor(Default);
                     printf("%s ", token);
                 }
-                token=strtok(NULL, s);
+            }
+            if(ent && words==1){
+                ent->cert=prevcert;
+                showEntryInfo(ent);
+            }
+            if(!doffset){
+                printf("Please enter a valid sentence.");
             }
             printf("\n");
             cbc_setcolor(Default);
         }
         else{
-            const char s[2]=" ";
-            char *token=strtok(input, s);
-            char *tokenbk=token;
-            entry *ent_init=NULL;
-            for(int i=0; token!=NULL; i++){
-                entry *ent=findEntry(token);
-                if(i==0 && ent){
-                    ent_init=ent;
-                }
+            int offset=0, doffset=0, words=0, prevcert=0;
+            entry *ent=NULL;
+            char token[MAXORIGLEN];
+            memset(token, 0, MAXORIGLEN);
+            for(; sscanf(input+offset, "%s%n", token, &doffset)==1; words++){
+                offset+=doffset;
+                ent=findEntry(token);
                 if(ent){
-                    if(i==0){
-                        printTranslation(ent, 0);
-                    }else{
-                        printTranslation(ent, 1);
-                        if(i==1){
-                            if(ent_init->cert<1000){
-                                ent_init->cert+=(1000-ent_init->cert)/7;
-                                if(ent_init->cert>=1000)ent_init->cert=999;
-                            }
-                        }
+                    if(words==0){
+                        prevcert=ent->cert;
                     }
+                    printTranslation(ent, 1);
                     size_t len=strlen(token);
                     while(isMark(token[len-1])){
                         len--;
@@ -343,23 +378,18 @@ int main(int argc, char *argv[]){
                     cbc_setcolor(Default);
                     printf("%s ", token);
                 }
-                token=strtok(NULL, s);
-                if(i==0 && token==NULL){
-                    if(ent){
-                        showEntryInfo(ent);
-                    }else{
-                        entry *revent=findEntryWithTransl(tokenbk);
-                        if(revent){
-                            showEntryInfo(revent);
-                        }
-                    }
-                }
+            }
+            if(!doffset){
+                printf("Please enter a valid sentence.");
+            }
+            if(ent && words==1){
+                ent->cert=prevcert;
+                showEntryInfo(ent);
             }
             printf("\n");
             cbc_setcolor(Default);
         }
     }
-    fclose(notes_file);
     saveDictionary(dic_file);
     freeall();
 }

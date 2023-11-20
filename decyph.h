@@ -4,14 +4,15 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdarg.h>
 #include "cbcurses.h"
 #define MAXPOINTERS 32767
 #define MAXLINKS 8
 #define MAXMORPHS 8
-#define MAXORIGLEN 32
-#define MAXTRANLEN 20
-#define SPEC_ORIG "%31s"
-#define SPEC_TRAN "%19s"
+#define MAXORIGLEN 33
+#define MAXTRANLEN 25
+#define SPEC_ORIG "%32s"
+#define SPEC_TRAN "%24s"
 #define DISPLAY_WIDTH 1024
 #define TOKEN_MAXLEN 64
 
@@ -322,7 +323,7 @@ int isMark(char c){
     }
     return 0;
 }
-entry newEntry(void){
+entry newEntry(void){ // alloc
     entry entry_new={0};
     entry_new.orig=mallocpointer(MAXORIGLEN*sizeof(char));
     entry_new.tran=mallocpointer(MAXTRANLEN*sizeof(char));
@@ -337,6 +338,15 @@ entry newEntry(void){
     entry_new.morphs_count=0;
     entry_new.morphs[0]=NULL;
     return entry_new;
+}
+void destroyEntry(entry *ent){
+    ent->len=0;
+    freepointer(ent->orig);
+    freepointer(ent->tran);
+    for(int i=0; i<ent->morphs_count; i++){
+        freepointer(ent->morphs[i]);
+    }
+    ent->morphs_count=0;
 }
 entry *findEntryWithTransl(const char *tran){
     size_t len=strlen(tran);
@@ -406,7 +416,7 @@ void parseNewEntry(entry *ent){
     ent->len=strlen(ent->orig);
     ent->code=entries_count;
 }
-void loadDictionary(FILE *fp){
+void loadDictionary(FILE *fp){ // alloc
     fp=fopenrelative("dic.txt", "r");
     if(fp){
         while(1){
@@ -446,13 +456,13 @@ void saveDictionary(FILE *fp){
     }
     fclose(fp);
 }
-void initEntries(void){
+void initEntries(void){ // alloc
     global.pointerpool=malloc(MAXPOINTERS*sizeof(void *));
     for(int i=0; i<MAXPOINTERS; i++)global.pointerpool[i]=NULL;
     entries=mallocpointer(100*sizeof(entry));
     entries_size=100;
 }
-void pushEntry(entry ent){
+void pushEntry(entry ent){ // realloc
     if(entries_count>=entries_size){
         entries_size+=50+entries_size/4;
         entries=reallocpointer(entries, entries_size*sizeof(entry));
@@ -486,11 +496,11 @@ void printTranslation(entry *ent, int certainize){
     }
 }
 void copyEntry(entry *dest, entry *src){
+    dest->code=src->code;
     dest->orig=src->orig;
     dest->tran=src->tran;
     dest->len=src->len;
     dest->tranlen=strlen(src->tran);
-    dest->code=src->code;
     dest->cert=src->cert;
     dest->links_count=src->links_count;
     for(int i=0; i<src->links_count; i++){
@@ -600,4 +610,20 @@ void showEntryInfo(entry *ent){
         }
     }
 }
+
+
+//morph:
+//entry {
+//    int morphs_count;
+//    char *morphs[MAXMORPHS];
+//}
+//
+//[x] on init: init morphs (but do not alloc space)
+//[x] on load: load morphs (alloc on load)
+//[x] on save: save morphs
+//[x] on addmorph: alloc space and add morph (before that, check if exists)
+//[x] on unmorph: unmorph all and free space
+//[x] on search: also search for morphs
+//[x] on copy: also copy morphs
+//[x] on printsingle: print its morphs
 #endif
